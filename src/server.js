@@ -17,7 +17,7 @@ server.post("/estoques", EstoquesController.criar);
 server.patch("/estoques/:id", EstoquesController.atualizar);
 server.del("/estoques/:id", EstoquesController.deletar);
 
-const PORT = 3002; 
+const PORT = 3003; 
 server.listen(PORT, () => { 
     console.log(`${server.name} rodando em ${server.url}`); 
 }); 
