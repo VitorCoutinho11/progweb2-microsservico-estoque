@@ -13,10 +13,29 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Usuario { 
-  id        Int      @id @default(autoincrement()) 
-  nome      String   @db.VarChar(120) 
-  email     String   @unique @db.VarChar(120) 
-  createdAt DateTime @default(now()) 
-  updatedAt DateTime @updatedAt 
-} 
+model Estoque {
+  id               Int      @id @default(autoincrement())
+  produtoId        Int      // Continua sem relação (Microsserviços)
+  
+  sectionId        Int
+  section          Section  @relation(fields: [sectionId], references: [id]) // ADICIONE ESTA LINHA
+
+  quantidade       Int      @default(0)
+  quantidadeMinima Int      @default(0)
+  observacao       String?  @db.Text
+  ativo            Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([produtoId, sectionId], name: "Estoque_produto_section_key")
+  @@index([produtoId])
+  @@index([sectionId])
+}
+
+model Section {
+  id        Int       @id @default(autoincrement())
+  codigo    String    
+  floorId   Int
+  floor     Floor     @relation(fields: [floorId], references: [id])
+  estoques  Estoque[] // Agora o Prisma vai encontrar o par lá em cima
+}

@@ -1,27 +1,33 @@
 const prisma = require("../config/prisma");
+const ProdutoService = require("../services/produtoService");
 
 class EstoquesController {
 
   // GET /estoques
   static async listar(req, res) {
     try {
+      // 1. Busca os estoques no SEU banco
       const estoques = await prisma.estoque.findMany({
         orderBy: { id: "asc" },
         include: {
-          produto: true,
           section: {
-            include: {
-              floor: {
-                include: {
-                  warehouse: true
-                }
-              }
-            }
+            include: { floor: { include: { warehouse: true } } }
           }
         }
       });
 
-      return res.send(200, estoques);
+      // 2. Opcional: "Hidratar" os dados com nomes dos produtos vindos da API externa
+      const produtosExternos = await ProdutoService.buscarTodosProdutos();
+      
+      const response = estoques.map(item => {
+        const infoProduto = produtosExternos.find(p => p.id === item.produtoId);
+        return {
+          ...item,
+          produto: infoProduto || { message: "Dados do produto indisponíveis" }
+        };
+      });
+
+      return res.send(200, response);
     } catch (error) {
       console.error(error);
       return res.send(500, { message: "Erro ao listar estoques." });
@@ -36,15 +42,8 @@ class EstoquesController {
       const estoque = await prisma.estoque.findUnique({
         where: { id },
         include: {
-          produto: true,
           section: {
-            include: {
-              floor: {
-                include: {
-                  warehouse: true
-                }
-              }
-            }
+            include: { floor: { include: { warehouse: true } } }
           }
         }
       });
@@ -53,7 +52,13 @@ class EstoquesController {
         return res.send(404, { message: "Estoque não encontrado." });
       }
 
-      return res.send(200, estoque);
+      // Busca dados do produto no microsserviço vizinho
+      const dadosProduto = await ProdutoService.buscarDadosProduto(estoque.produtoId);
+      
+      return res.send(200, {
+        ...estoque,
+        produto: dadosProduto
+      });
 
     } catch (error) {
       console.error(error);
@@ -61,75 +66,29 @@ class EstoquesController {
     }
   }
 
-  // GET /estoques/produto/:produtoId
-  static async buscarPorProdutoId(req, res) {
-    try {
-      const produtoId = Number(req.params.produtoId);
-
-      const produto = await prisma.produto.findUnique({
-        where: { id: produtoId }
-      });
-
-      if (!produto) {
-        return res.send(404, { message: "Produto não encontrado." });
-      }
-
-      const estoques = await prisma.estoque.findMany({
-        where: { produtoId },
-        include: {
-          section: {
-            include: {
-              floor: {
-                include: {
-                  warehouse: true
-                }
-              }
-            }
-          }
-        }
-      });
-
-      return res.send(200, estoques);
-
-    } catch (error) {
-      console.error(error);
-      return res.send(500, { message: "Erro ao buscar estoque do produto." });
-    }
-  }
-
   // POST /estoques
   static async criar(req, res) {
     try {
-      const {
-        produtoId,
-        sectionId,
-        quantidade,
-        quantidadeMinima,
-        observacao
-      } = req.body;
+      const { produtoId, sectionId, quantidade, quantidadeMinima, observacao } = req.body;
 
       if (!produtoId || !sectionId || quantidade == null) {
-        return res.send(400, {
-          message: "produtoId, sectionId e quantidade são obrigatórios."
-        });
+        return res.send(400, { message: "produtoId, sectionId e quantidade são obrigatórios." });
       }
 
-      // valida produto
-      const produto = await prisma.produto.findUnique({
-        where: { id: Number(produtoId) }
-      });
+      // VALIDAÇÃO EXTERNA: Pergunta ao outro microsserviço se o produto existe
+      const produtoValido = await ProdutoService.buscarDadosProduto(Number(produtoId));
 
-      if (!produto) {
-        return res.send(404, { message: "Produto não encontrado." });
+      if (!produtoValido) {
+        return res.send(404, { message: "Produto inválido ou inexistente no catálogo." });
       }
 
-      // valida section
+      // VALIDAÇÃO LOCAL: Section pertence a este microsserviço
       const section = await prisma.section.findUnique({
         where: { id: Number(sectionId) }
       });
 
       if (!section) {
-        return res.send(404, { message: "Section não encontrada." });
+        return res.send(404, { message: "Seção de estoque não encontrada." });
       }
 
       const novoEstoque = await prisma.estoque.create({
@@ -145,15 +104,9 @@ class EstoquesController {
       return res.send(201, novoEstoque);
 
     } catch (error) {
-      console.error(error);
-
-      // erro de duplicidade (unique produto + section)
       if (error.code === "P2002") {
-        return res.send(400, {
-          message: "Já existe esse produto nessa seção."
-        });
+        return res.send(400, { message: "Já existe esse produto nessa seção." });
       }
-
       return res.send(500, { message: "Erro ao cadastrar estoque." });
     }
   }
@@ -163,23 +116,15 @@ class EstoquesController {
     try {
       const id = Number(req.params.id);
 
-      const existe = await prisma.estoque.findUnique({
-        where: { id }
-      });
+      const existe = await prisma.estoque.findUnique({ where: { id } });
+      if (!existe) return res.send(404, { message: "Estoque não encontrado." });
 
-      if (!existe) {
-        return res.send(404, { message: "Estoque não encontrado." });
-      }
-
-      // valida section se vier no body
+      // Se tentar mudar a seção, valida se a nova seção existe
       if (req.body.sectionId) {
         const section = await prisma.section.findUnique({
           where: { id: Number(req.body.sectionId) }
         });
-
-        if (!section) {
-          return res.send(404, { message: "Section não encontrada." });
-        }
+        if (!section) return res.send(404, { message: "Nova seção não encontrada." });
       }
 
       const estoque = await prisma.estoque.update({
@@ -188,9 +133,7 @@ class EstoquesController {
       });
 
       return res.send(200, estoque);
-
     } catch (error) {
-      console.error(error);
       return res.send(500, { message: "Erro ao atualizar estoque." });
     }
   }
@@ -199,27 +142,16 @@ class EstoquesController {
   static async deletar(req, res) {
     try {
       const id = Number(req.params.id);
+      const existe = await prisma.estoque.findUnique({ where: { id } });
+      
+      if (!existe) return res.send(404, { message: "Estoque não encontrado." });
 
-      const existe = await prisma.estoque.findUnique({
-        where: { id }
-      });
-
-      if (!existe) {
-        return res.send(404, { message: "Estoque não encontrado." });
-      }
-
-      await prisma.estoque.delete({
-        where: { id }
-      });
-
+      await prisma.estoque.delete({ where: { id } });
       return res.send(204);
-
     } catch (error) {
-      console.error(error);
       return res.send(500, { message: "Erro ao deletar estoque." });
     }
   }
-
 }
 
 module.exports = EstoquesController;
