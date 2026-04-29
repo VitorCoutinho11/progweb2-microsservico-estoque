@@ -1,5 +1,7 @@
+const { PrismaClient } = require("@prisma/client/extension");
 const prisma = require("../config/prisma");
-
+const prisma = new PrismaClient();
+const ProdutoService = require("../services/produtoService");
 
 class EstoquesController {
 
@@ -103,20 +105,30 @@ class EstoquesController {
     try {
       const { produtoId, sectionId, quantidade, quantidadeMinima, observacao } = req.body;
 
-      // 1. Validação de campos obrigatórios
+      // 1. Validação básica de campos
       if (!produtoId || !sectionId || quantidade == null) {
         return res.send(400, { message: "produtoId, sectionId e quantidade são obrigatórios." });
       }
 
+      // 2. O FETCH: Validação externa (Comunicação entre Microsserviços)
+      const produtoExisteNoCatalogo = await ProdutoService.buscarDadosProduto(Number(produtoId));
+
+      if (!produtoExisteNoCatalogo) {
+        return res.send(404, { 
+          message: `O produto com ID ${produtoId} não existe no Catálogo. Não é possível criar estoque para ele.` 
+        });
+      }
+
+      // 3. Validação da Seção (Banco Local)
       const section = await prisma.section.findUnique({
         where: { id: Number(sectionId) }
       });
 
       if (!section) {
-        return res.send(404, { message: "Seção de estoque não encontrada no seu banco." });
+        return res.send(404, { message: "Seção de estoque não encontrada no banco local." });
       }
 
-      // 3. Criação do registro
+      // 4. Se tudo deu certo, cria no banco
       const novoEstoque = await prisma.estoque.create({
         data: {
           produtoId: Number(produtoId),
@@ -127,15 +139,15 @@ class EstoquesController {
         }
       });
 
-      console.log("Estoque criado com sucesso!");
+      console.log("Estoque criado com sucesso após validar produto externo!");
       return res.send(201, novoEstoque);
 
     } catch (error) {
-      console.error("ERRO NO POST:", error);
+      console.error("ERRO NO POST COM FETCH:", error);
       if (error.code === "P2002") {
         return res.send(400, { message: "Já existe esse produto nessa seção." });
       }
-      return res.send(500, { message: "Erro ao cadastrar estoque.", detalhe: error.message });
+      return res.send(500, { message: "Erro ao cadastrar estoque.", erroReal: error.message });
     }
   }
 
